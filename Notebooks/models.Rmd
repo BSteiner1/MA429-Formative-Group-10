@@ -1,0 +1,57 @@
+---
+title: "Group-10-models"
+output: html_document
+date: "2024-02-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tree)
+```
+
+
+```{r}
+df <- read.csv('../Data/one_hot_data.csv')
+head(df)
+```
+
+
+```{r}
+test_indices = sample(nrow(df),0.3*nrow(df),replace=FALSE)
+train_data = df[-test_indices,]
+test_data = df[test_indices,]
+```
+
+
+```{r}
+# Training data and labels
+X_train <- train_data[, -ncol(train_data)]
+y_train <- train_data$income
+y_train <- as.factor(y_train)
+
+# Test data and labels
+X_test <- test_data[, -ncol(test_data)]
+y_test <- test_data$income
+y_test <- as.factor(y_test)
+```
+
+
+### Decision Tree
+
+```{r}
+tree = tree(formula = y_train ~ ., X_train)
+summary(tree)
+```
+
+```{r}
+plot(tree)
+text(tree, pretty = 0)
+```
+
+### Continue tuning and evaluation below
+
+
+
