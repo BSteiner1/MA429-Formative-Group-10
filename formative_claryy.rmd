@@ -1,0 +1,143 @@
+---
+title: "formative_clary"
+output: html_document
+date: "2024-02-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Clear environment
+```{r}
+rm(list = ls())
+set.seed(1)
+```
+
+
+Deal with the data
+```{r}
+# import data frame
+data <- read.csv("~/Desktop/LSE/LT ma429 machine learning/formative/adult/adult.data", header=FALSE)
+colnames(data)
+adult <- data
+
+# rename data frame columns
+colnames(adult) <- c('age','workclass','fnlwgt','education','educationnum','maritalstatus','occupation','relationship','race','sex','capitalgain','capitalloss','hoursperweek','nativecountry','income')
+
+# check data type, convert categorical ones to levels
+str(adult)
+adult$workclass <- as.factor(adult$workclass)
+adult$education <- as.factor(adult$education)
+adult$maritalstatus <- as.factor(adult$maritalstatus)
+adult$occupation <- as.factor(adult$occupation)
+adult$relationship <- as.factor(adult$relationship)
+adult$race <- as.factor(adult$race)
+adult$sex <- as.factor(adult$sex)
+adult$nativecountry <- as.factor(adult$nativecountry)
+adult$income <- as.factor(adult$income)
+str(adult)
+
+# deal with nativecountry (aka nationality)
+unique(adult$nativecountry)
+summary(adult$nativecountry)
+
+# this feature has 42 levels, with united-states being the majority
+# 29170 people is US
+sum(adult$nativecountry == ' United-States')/nrow(adult) # this means 89% of the data is US by nationality
+
+# meanwhile, the tree function only allows 32 levels at max
+# since US is the majority, we will change this data to indicate US or non-US nationality using binary
+# TRUE for US and FALSE for non-US
+adult$nativecountry <- as.factor(adult$nativecountry == ' United-States')
+
+# rename target variables with binary variables
+# FALSE for <=50K, TRUE for >50K
+unique(adult$income)
+adult$income <- as.factor(adult$income == ' >50K')
+```
+
+Check the data feature
+```{r}
+# capital gain & capital loss variables have the same interpretation, and basically, we can gather them into 1 feature, multiplying capital loss by (-1) and gather them in the same function
+adult$capitalgain <- adult$capitalgain +  (-1)*adult$capitalloss
+adult <- adult[ ,-which(colnames(adult) == 'capitalloss')]
+
+# notice that there are many zeros in capital-gain feature
+length(which(adult[ ,which(colnames(adult) == 'capitalgain')] == 0))/ length(adult[ ,which(colnames(adult) == 'capitalgain')])
+
+# turns 87% of the data in capital-gain feature is zero
+# this maybe because not everyone who participate in the data collection invest in assets
+# we consider dropping this data as a result
+adult <- adult[ ,-which(colnames(adult) == 'capitalgain')] 
+
+# consider dropping education because education and educationnum both represents the same idea, the difference is that education uses categorical variable while educationnum uses numerical variable
+adult <- adult[ ,-which(colnames(adult) == 'education')]
+```
+
+Do something on the missing values
+```{r}
+# there are some missing values in feature workclass, occupation, and native-country
+# let's check how many of them are missing
+
+# first: check for workclass (categorical)
+length(which(adult[ ,which(colnames(adult) == 'workclass')] == ' ?'))/ length(adult[ ,which(colnames(adult) == 'workclass')])
+# 5.63% of the data here is missing
+
+# second: check for occupation (categorical)
+length(which(adult[ ,which(colnames(adult) == 'occupation')] == ' ?'))/ length(adult[ ,which(colnames(adult) == 'occupation')])
+# 5.66% of the data here is missing
+
+# third: check for native-country (categorical)
+length(which(adult[ ,which(colnames(adult) == 'nativecountry')] == ' ?'))/ length(adult[ ,which(colnames(adult) == 'nativecountry')])
+# 1.79% of the data here is missing
+
+# check if there are rows with three missing values
+length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), which(colnames(adult) == 'nativecountry'))], 1, function(x) all(x == ' ?')) == TRUE))/ nrow(adult)
+# 0.08% of the rows has all 3 missing values
+
+# check if there are rows with at least one missing value
+length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), which(colnames(adult) == 'nativecountry'))], 1, function(x) any(x == ' ?')) == TRUE))/ nrow(adult)
+# 7.36% of the data has at least one missing values
+
+# however, we don't know if these missing values are MAR, MCAR, or MNAR, and these features are all categorical variables.
+# for now, we separate the missing values and use the complete ones to develop our model
+missing <- adult[which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), which(colnames(adult) == 'nativecountry'))], 1, function(x) any(x == ' ?')) == TRUE),]
+adult_non <- adult[-which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), which(colnames(adult) == 'nativecountry'))], 1, function(x) any(x == ' ?')) == TRUE),]
+
+```
+
+Start doing the model. We want to explore decision tree method. Split data set for training and test
+```{r}
+# separate df into input variables and target variables
+test_indices = sample(nrow(adult_non),0.3*nrow(adult_non),replace=FALSE)
+training = adult_non[-test_indices,]
+test = adult_non[test_indices,]
+
+# we will deal with fnlwgt by using rpart function
+# we treat fnlwgt as a weight instances, and rpart is widely used to fit recursive partitioning models
+# we opt for this because duplicating the data takes a lot of memory spade
+# call library
+library(rpart)
+
+# start doing rpart. 'data' is dataset, 'method' is 'class' because we are doing classification, and 'weights' is fnlwgt
+training_class <- rpart(income ~ ., data = training, method = "class", weights = data$fnlwgt)
+plot(training_class)
+text(training_class, pretty = 0, cex = 0.8)
+```
+
+Now we test with the test dataset
+```{r}
+test_predict = predict(training_class,test,type="class")
+confusion_matrix = table(pred=test_predict, true=test$income) #note: order MATTERS!
+confusion_matrix
+
+# (pred, true) interpretation:
+# (TRUE, TRUE) predicted income above 50K and is true 
+# (FALSE, FALSE) predicted income below 50K and is true
+# (FALSE, TRUE) predicted income below 50K and is false
+# (TRUE, FALSE) predicted income above 50K and is false
+(confusion_matrix[1,1] + confusion_matrix[2,2])/sum(confusion_matrix) # accuracy: 82.6%
+precision(confusion_matrix) # precision rate: 86%
+recall(confusion_matrix) # recall rate: 91.7%
+```
