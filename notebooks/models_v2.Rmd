@@ -1,0 +1,258 @@
+---
+title: "formative_models"
+output: html_document
+date: "2024-03-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Clear environment
+```{r}
+rm(list = ls())
+set.seed(1)
+```
+
+Import packages
+```{r}
+library(knitr)
+library(rpart)
+library(caret)
+library(glmnet)
+```
+
+Data pre-processing
+
+```{r}
+# Import data frame
+data <- read.csv("../data/adult.data", header=FALSE)
+colnames(data)
+adult <- data
+```
+
+
+```{r}
+# Rename data frame columns
+colnames(adult) <- c('age','workclass','fnlwgt','education','educationnum','maritalstatus','occupation','relationship','race','sex',
+                     'capitalgain','capitalloss','hoursperweek','nativecountry','income')
+
+```
+
+
+```{r}
+# Convert categorical variables to levels
+adult$workclass <- as.factor(adult$workclass)
+adult$education <- as.factor(adult$education)
+adult$maritalstatus <- as.factor(adult$maritalstatus)
+adult$occupation <- as.factor(adult$occupation)
+adult$relationship <- as.factor(adult$relationship)
+adult$race <- as.factor(adult$race)
+adult$sex <- as.factor(adult$sex)
+adult$nativecountry <- as.factor(adult$nativecountry)
+adult$income <- as.factor(adult$income)
+```
+
+
+```{r}
+# Deal with nativecountry (nationality)
+unique(adult$nativecountry)
+summary(adult$nativecountry)
+
+# this feature has 42 levels, with united-states being the majority
+sum(adult$nativecountry == ' United-States')/nrow(adult) 
+```
+89% of the data is US by nationality
+
+
+```{r}
+# meanwhile, the tree function only allows 32 levels
+# since US is the majority, we will change this data to indicate US or non-US nationality using TRUE for US and FALSE for non-US
+adult$nativecountry <- as.factor(adult$nativecountry == ' United-States')
+```
+
+
+```{r}
+# Convert target variable to FALSE for <=50K, TRUE for >50K
+unique(adult$income)
+adult$income <- as.factor(adult$income == ' >50K')
+```
+
+Feature Engineering
+
+```{r}
+# capital gain & capital loss variables have the same interpretation, so we subtract capital loss from capital gain and remove capital loss
+adult$capitalgain <- adult$capitalgain - adult$capitalloss
+adult <- adult[ ,-which(colnames(adult) == 'capitalloss')]
+```
+
+```{r}
+# notice that there are many zeros in capital-gain feature
+length(which(adult[ ,which(colnames(adult) == 'capitalgain')] == 0))/ length(adult[ ,which(colnames(adult) == 'capitalgain')])
+```
+This could be because not everyone who participated in the data collection invests, or maybe they don't want to disclose it for tax reasons
+
+```{r}
+# we drop this column as a result
+adult <- adult[ ,-which(colnames(adult) == 'capitalgain')] 
+```
+
+
+Variable engineering
+
+```{r}
+# We drop the education variable because it represents the same thing as educationnum, but education uses a categorical variable while educationnum uses a numerical variable already processed for us
+adult <- adult[ ,-which(colnames(adult) == 'education')]
+```
+
+Deal with missing values
+
+```{r}
+# Check for missing values represented as ' ?'
+missing_values <- colSums(adult == ' ?', na.rm = TRUE)
+
+# Get column names with missing values
+columns_with_missing <- names(missing_values[missing_values > 0])
+columns_with_missing
+```
+
+```{r}
+# Explore variables with missing values
+workclass_missing <- length(which(adult[ ,which(colnames(adult) == 'workclass')] == ' ?'))/ length(adult[ ,which(colnames(adult) == 'workclass')])
+
+occupation_missing <- length(which(adult[ ,which(colnames(adult) == 'occupation')] == ' ?'))/ length(adult[ ,which(colnames(adult) == 'occupation')])
+```
+
+```{r}
+missing_rates <- cbind(round(workclass_missing*100, 2), round(occupation_missing*100, 2))
+colnames(missing_rates) <- c("workclass", "occupation")
+missing_rates |>
+  kable()
+```
+
+```{r}
+both_missing <- length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'))], 1, function(x) all(x == ' ?')) == TRUE))/ nrow(adult)
+
+one_missing <- length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'))], 1, function(x) any(x == ' ?')) == TRUE))/ nrow(adult)
+```
+
+```{r}
+na_rates <- cbind(round(both_missing*100, 2), round(one_missing*100, 2))
+colnames(na_rates) <- c("Both Missing", "One Missing")
+na_rates |>
+  kable()
+```
+
+# Interestingly, we notice that `workclass` is always missing if `occupation` is missing
+
+
+```{r}
+# How many rows have a missing value
+length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), which(colnames(adult) == 'nativecountry'))], 1, function(x) any(x == ' ?')) == TRUE))/ nrow(adult)
+```
+
+```{r}
+# However, we don't know if these missing values are MAR, MCAR, or MNAR, and these features are all categorical variables.
+# For now, we simply drop all rows with missing values
+missing <- adult[which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), 
+                                       which(colnames(adult) == 'nativecountry'))], 1, function(x) any(x == ' ?')) == TRUE),]
+adult_non <- adult[-which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), 
+                                          which(colnames(adult) == 'nativecountry'))], 1, function(x) any(x == ' ?')) == TRUE),]
+```
+
+# Modelling
+
+# Split data into training and test
+```{r}
+# Create a 70:30 train:test split
+test_indices = sample(nrow(adult_non),0.3*nrow(adult_non),replace=FALSE)
+training = adult_non[-test_indices,]
+test = adult_non[test_indices,]
+```
+
+# Decision tree model
+
+```{r}
+# 'method' is 'class' because we are doing classification, and 'weights' is fnlwgt
+training_class <- rpart(income ~ ., data = training, method = "class", weights = data$fnlwgt)
+
+# Set up the plot dimensions and margins
+# Save the plot for the report
+png("decision_tree.png", width = 8, height = 8, units = "in", res = 300)
+par(mar = c(5, 5, 5, 5))  # Set margins (bottom, left, top, right)
+
+# Plot the decision tree
+plot(training_class)
+text(training_class, pretty=0, cex = 0.8)
+```
+
+
+# Test performance
+```{r}
+test_predict = predict(training_class,test,type="class")
+confusion_matrix = table(pred=test_predict, true=test$income) #note: order MATTERS!
+confusion_matrix
+
+# (pred, true) interpretation:
+# (TRUE, TRUE) predicted income above 50K and truth is >50k 
+# (FALSE, FALSE) predicted income below 50K and truth is <50k
+# (FALSE, TRUE) predicted income below 50K and truth is >50k
+# (TRUE, FALSE) predicted income above 50K and truth is <50k
+tree_accuracy <- (confusion_matrix[1,1] + confusion_matrix[2,2])/sum(confusion_matrix) 
+tree_precision <- precision(confusion_matrix) 
+tree_recall <- recall(confusion_matrix) 
+```
+
+```{r}
+tree_summary <- cbind(round(tree_accuracy*100, 1), round(tree_precision*100, 1), round(tree_recall*100, 1))
+colnames(tree_summary) <- c("Accuracy", "Precision", "Recall")
+tree_summary |>
+  kable()
+```
+
+```{r}
+lasso_target <- as.numeric(training$income) - 1
+```
+
+```{r}
+# Fit Lasso regression model
+lasso_model <- glmnet(x = as.matrix(training[, -ncol(training)]),  # Predictor variables
+                      y = lasso_target,              # Response variable
+                      alpha = 1) 
+```
+
+```{r}
+plot(lasso_model, xvar = "lambda", label = TRUE)
+```
+
+
+```{r}
+cvfit <- cv.glmnet(x = as.matrix(training[, -ncol(training)]),  # Predictor variables
+                      y = lasso_target)
+```
+```{r}
+plot(cvfit)
+```
+
+
+```{r}
+# Optimal lambda
+cvfit$lambda.min 
+```
+```{r}
+# Predictions
+predicted <- predict(cvfit, newx = as.matrix(test[, -ncol(test)]), s = "lambda.min")
+```
+```{r}
+# Convert target to 0/1 numeric variable
+test_as_numeric <- as.numeric(test$income) - 1
+```
+
+```{r}
+# Convert predictions to 0/1 using threshold = 0.5
+predicted_class <- ifelse(predicted > 0.5, 1, 0)
+
+# Compute accuracy
+accuracy <- mean(predicted_class == test_as_numeric)
+print(accuracy)
+```
