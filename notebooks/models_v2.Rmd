@@ -6,6 +6,7 @@ date: "2024-03-03"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+options(warn = -1)
 ```
 
 Clear environment
@@ -225,12 +226,14 @@ lasso_model <- glmnet(x = as.matrix(training[, -ncol(training)]),  # Predictor v
 plot(lasso_model, xvar = "lambda", label = TRUE)
 ```
 
+# Cross Validation
 
 ```{r}
 cvfit <- cv.glmnet(x = as.matrix(training[, -ncol(training)]),  # Predictor variables
                       y = lasso_target)
 ```
 ```{r}
+# View a plot of training error vs log lambda
 plot(cvfit)
 ```
 
@@ -241,7 +244,7 @@ cvfit$lambda.min
 ```
 ```{r}
 # Predictions
-predicted <- predict(cvfit, newx = as.matrix(test[, -ncol(test)]), s = "lambda.min")
+predicted <- predict(cvfit, newx = as.matrix(test[, -ncol(test)]), s = cvfit$lambda.min )
 ```
 ```{r}
 # Convert target to 0/1 numeric variable
@@ -256,3 +259,6 @@ predicted_class <- ifelse(predicted > 0.5, 1, 0)
 accuracy <- mean(predicted_class == test_as_numeric)
 print(accuracy)
 ```
+
+
+
