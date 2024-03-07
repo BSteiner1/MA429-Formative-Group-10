@@ -142,6 +142,11 @@ missing_rates |>
 both_missing <- length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'))], 1, function(x) all(x == ' ?')) == TRUE))/ nrow(adult)
 
 one_missing <- length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'))], 1, function(x) any(x == ' ?')) == TRUE))/ nrow(adult)
+
+both_missing_income <- adult$income[which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'))], 1, function(x) all(x == ' ?')) == TRUE)]
+
+sum(both_missing_income == FALSE)/length(both_missing_income)
+# 89.6% of the samples with both missing values has income below 50K
 ```
 
 ```{r}
