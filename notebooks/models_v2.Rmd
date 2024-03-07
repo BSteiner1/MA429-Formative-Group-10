@@ -65,7 +65,9 @@ adult$income <- as.factor(adult$income)
 unique(adult$nativecountry)
 summary(adult$nativecountry)
 
-# this feature has 42 levels, with united-states being the majority
+nativecountry_missing <- length(which(adult[ ,which(colnames(adult) == 'nativecountry')] == ' ?'))/ length(adult[ ,which(colnames(adult) == 'nativecountry')])
+
+# this feature has 42 levels, with united-states being the majority, and 1.79% of them are missing values
 sum(adult$nativecountry == ' United-States')/nrow(adult) 
 ```
 89% of the data is US by nationality
