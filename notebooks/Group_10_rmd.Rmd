@@ -1,0 +1,551 @@
+---
+title: "formative_models"
+output: html_document
+date: "2024-03-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(warn = -1)
+```
+
+Clear environment
+```{r}
+rm(list = ls())
+set.seed(1)
+```
+
+Import packages
+```{r}
+library(knitr)
+library(lattice)
+library(rpart)
+library(ggplot2)
+library(caret)
+library(glmnet)
+library(rpart.plot)
+library(tree)
+library(randomForest)
+```
+
+Data pre-processing
+
+```{r}
+# Import data frame
+data <- read.csv("../data/adult.data", header=FALSE)
+colnames(data)
+adult <- data
+```
+
+
+```{r}
+# Rename data frame columns
+colnames(adult) <- c('age','workclass','fnlwgt','education','educationnum','maritalstatus','occupation','relationship','race','sex',
+                     'capitalgain','capitalloss','hoursperweek','nativecountry','income')
+
+```
+
+
+```{r}
+# Convert categorical variables to levels
+adult$workclass <- as.factor(adult$workclass)
+adult$education <- as.factor(adult$education)
+adult$maritalstatus <- as.factor(adult$maritalstatus)
+adult$occupation <- as.factor(adult$occupation)
+adult$relationship <- as.factor(adult$relationship)
+adult$race <- as.factor(adult$race)
+adult$sex <- as.factor(adult$sex)
+adult$nativecountry <- as.factor(adult$nativecountry)
+adult$income <- as.factor(adult$income)
+```
+
+
+```{r}
+# Deal with nativecountry (nationality)
+unique(adult$nativecountry)
+summary(adult$nativecountry)
+
+nativecountry_missing <- length(which(adult[ ,which(colnames(adult) == 'nativecountry')] == ' ?'))/ length(adult[ ,which(colnames(adult) == 'nativecountry')])
+
+# this feature has 42 levels, with united-states being the majority, and 1.79% of them are missing values
+sum(adult$nativecountry == ' United-States')/nrow(adult) 
+```
+89% of the data is US by nationality
+
+
+```{r}
+# meanwhile, the tree function only allows 32 levels
+# since US is the majority, we will change this data to indicate US or non-US nationality using TRUE for US and FALSE for non-US
+adult$nativecountry <- as.factor(adult$nativecountry == ' United-States')
+```
+
+
+```{r}
+# Convert target variable to FALSE for <=50K, TRUE for >50K
+unique(adult$income)
+adult$income <- as.factor(adult$income == ' >50K')
+```
+
+Feature Engineering
+
+```{r}
+# capital gain & capital loss variables have the same interpretation, so we subtract capital loss from capital gain and remove capital loss
+adult$capitalgain <- adult$capitalgain - adult$capitalloss
+adult <- adult[ ,-which(colnames(adult) == 'capitalloss')]
+```
+
+```{r}
+# notice that there are many zeros in capital-gain feature
+length(which(adult[ ,which(colnames(adult) == 'capitalgain')] == 0))/ length(adult[ ,which(colnames(adult) == 'capitalgain')])
+```
+This could be because not everyone who participated in the data collection invests, or maybe they don't want to disclose it for tax reasons
+
+```{r}
+# we drop this column as a result
+adult <- adult[ ,-which(colnames(adult) == 'capitalgain')] 
+```
+
+
+Variable engineering
+
+```{r}
+# We drop the education variable because it represents the same thing as educationnum, but education uses a categorical variable while educationnum uses a numerical variable already processed for us
+adult <- adult[ ,-which(colnames(adult) == 'education')]
+```
+
+Deal with missing values
+
+```{r}
+# Check for missing values represented as ' ?'
+missing_values <- colSums(adult == ' ?', na.rm = TRUE)
+
+# Get column names with missing values
+columns_with_missing <- names(missing_values[missing_values > 0])
+columns_with_missing
+```
+
+```{r}
+# Explore variables with missing values
+workclass_missing <- length(which(adult[ ,which(colnames(adult) == 'workclass')] == ' ?'))/ length(adult[ ,which(colnames(adult) == 'workclass')])
+
+occupation_missing <- length(which(adult[ ,which(colnames(adult) == 'occupation')] == ' ?'))/ length(adult[ ,which(colnames(adult) == 'occupation')])
+```
+
+```{r}
+missing_rates <- cbind(round(workclass_missing*100, 2), round(occupation_missing*100, 2))
+colnames(missing_rates) <- c("workclass", "occupation")
+missing_rates |>
+  kable()
+```
+
+```{r}
+both_missing <- length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'))], 1, function(x) all(x == ' ?')) == TRUE))/ nrow(adult)
+
+one_missing <- length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'))], 1, function(x) any(x == ' ?')) == TRUE))/ nrow(adult)
+
+both_missing_income <- adult$income[which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'))], 1, function(x) all(x == ' ?')) == TRUE)]
+
+sum(both_missing_income == FALSE)/length(both_missing_income)
+# 89.6% of the samples with both missing values has income below 50K
+```
+
+```{r}
+na_rates <- cbind(round(both_missing*100, 2), round(one_missing*100, 2))
+colnames(na_rates) <- c("Both Missing", "One Missing")
+na_rates |>
+  kable()
+```
+
+# Interestingly, we notice that `workclass` is always missing if `occupation` is missing
+
+
+```{r}
+# How many rows have a missing value
+length(which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), which(colnames(adult) == 'nativecountry'))], 1, function(x) any(x == ' ?')) == TRUE))/ nrow(adult)
+```
+
+```{r}
+# However, we don't know if these missing values are MAR, MCAR, or MNAR, and these features are all categorical variables.
+# For now, we simply drop all rows with missing values
+missing <- adult[which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), 
+                                       which(colnames(adult) == 'nativecountry'))], 1, function(x) any(x == ' ?')) == TRUE),]
+adult_non <- adult[-which(apply(adult[ ,c(which(colnames(adult) == 'workclass'), which(colnames(adult) == 'occupation'), 
+                                          which(colnames(adult) == 'nativecountry'))], 1, function(x) any(x == ' ?')) == TRUE),]
+```
+
+# Modelling
+
+# Split data into training and test
+```{r}
+# Create a 70:30 train:test split
+test_indices = sample(nrow(adult_non),0.3*nrow(adult_non),replace=FALSE)
+training = adult_non[-test_indices,]
+test = adult_non[test_indices,]
+```
+
+**Decision tree model, with weight**
+
+# (1) Base/original model
+```{r}
+# 'method' is 'class' because we are doing classification, and 'weights' is fnlwgt
+training_class <- rpart(income ~ ., data = training, method = "class", weights = training$fnlwgt)
+
+# Decision tree output
+training_class
+summary(training_class)
+
+# Plot 1: Decision tree
+# Set up the plot dimensions and margins
+# Save the plot for the report
+png("decision_tree.png", width = 15, height = 8, units = "in", res = 300)
+par(mar = c(5, 5, 5, 5))  # Set margins (bottom, left, top, right)
+
+# Plot the decision tree
+plot(training_class)
+text(training_class, pretty=0, cex = 0.8)
+
+# Plot 2: Decision tree with % data
+# Set up the plot dimensions and margins
+# Save the plot for the report
+png("decision_tree_complete.png", width = 15, height = 8, units = "in", res = 300)
+par(mar = c(5, 5, 5, 5))  # Set margins (bottom, left, top, right)
+
+# Plot the decision tree
+rpart.plot(training_class, type=0, extra=106, under=FALSE)
+```
+
+# (2) Pruning
+```{r}
+
+printcp(training_class) # pick CP with the lowest cross-validated error
+prune_tree = prune(training_class, cp = 0.01)
+prune_tree
+# The pruned tree is the same with the original decision tree. This means that our current tree is still the best so far.
+
+```
+
+# Test performance of the base model / pruned
+```{r}
+
+test_predict = predict(training_class,test,type="class")
+confusion_matrix = table(pred=test_predict, true=test$income)
+confusion_matrix
+
+# (pred, true) interpretation:
+# (TRUE, TRUE) predicted income above 50K and truth is >50k 
+# (FALSE, FALSE) predicted income below 50K and truth is <50k
+# (FALSE, TRUE) predicted income below 50K and truth is >50k
+# (TRUE, FALSE) predicted income above 50K and truth is <50k
+
+tree_summary <- cbind(round(100*(confusion_matrix[1,1] + confusion_matrix[2,2])/sum(confusion_matrix), 1), round(precision(confusion_matrix)*100, 1), round(recall(confusion_matrix)*100, 1))
+colnames(tree_summary) <- c("Accuracy", "Precision", "Recall")
+tree_summary |>
+  kable()
+
+```
+
+# (3) Bagging
+```{r}
+
+bagging = randomForest(income ~ ., training, mtry=(ncol(training)-1), weight=training$fnlwgt) 
+bagging
+
+```
+
+# Test performance of bagging
+```{r}
+
+test_predict_b = predict(bagging,test,type="class")
+confusion_matrix_b = table(pred=test_predict_b, true=test$income)
+confusion_matrix_b
+
+# (pred, true) interpretation:
+# (TRUE, TRUE) predicted income above 50K and truth is >50k 
+# (FALSE, FALSE) predicted income below 50K and truth is <50k
+# (FALSE, TRUE) predicted income below 50K and truth is >50k
+# (TRUE, FALSE) predicted income above 50K and truth is <50k
+
+tree_summary_b <- cbind(round(100*(confusion_matrix_b[1,1] + confusion_matrix_b[2,2])/sum(confusion_matrix_b), 1), round(precision(confusion_matrix_b)*100, 1), round(recall(confusion_matrix_b)*100, 1))
+colnames(tree_summary_b) <- c("Accuracy", "Precision", "Recall")
+tree_summary_b |>
+  kable()
+
+```
+
+# (4) Random forest
+```{r}
+
+rf_1 = randomForest(income ~ ., training, mtry=1, weight=training$fnlwgt) 
+rf_2 = randomForest(income ~ ., training, mtry=2, weight=training$fnlwgt) 
+rf_3 = randomForest(income ~ ., training, mtry=3, weight=training$fnlwgt) 
+rf_4 = randomForest(income ~ ., training, mtry=4, weight=training$fnlwgt) 
+rf_5 = randomForest(income ~ ., training, mtry=5, weight=training$fnlwgt) 
+rf_6 = randomForest(income ~ ., training, mtry=6, weight=training$fnlwgt) 
+rf_7 = randomForest(income ~ ., training, mtry=7, weight=training$fnlwgt) 
+rf_8 = randomForest(income ~ ., training, mtry=8, weight=training$fnlwgt) 
+rf_9 = randomForest(income ~ ., training, mtry=9, weight=training$fnlwgt) 
+rf_10 = randomForest(income ~ ., training, mtry=10, weight=training$fnlwgt) 
+
+test_predict_rf_1 = predict(rf_1,test,type="class")
+confusion_matrix_rf_1 = table(pred=test_predict_rf_1, true=test$income)
+
+test_predict_rf_2 = predict(rf_2,test,type="class")
+confusion_matrix_rf_2 = table(pred=test_predict_rf_2, true=test$income)
+
+test_predict_rf_3 = predict(rf_3,test,type="class")
+confusion_matrix_rf_3 = table(pred=test_predict_rf_3, true=test$income)
+
+test_predict_rf_4 = predict(rf_4,test,type="class")
+confusion_matrix_rf_4 = table(pred=test_predict_rf_4, true=test$income)
+
+test_predict_rf_5 = predict(rf_5,test,type="class")
+confusion_matrix_rf_5 = table(pred=test_predict_rf_5, true=test$income)
+
+test_predict_rf_6 = predict(rf_6,test,type="class")
+confusion_matrix_rf_6 = table(pred=test_predict_rf_6, true=test$income)
+
+test_predict_rf_7 = predict(rf_7,test,type="class")
+confusion_matrix_rf_7 = table(pred=test_predict_rf_7, true=test$income)
+
+test_predict_rf_8 = predict(rf_8,test,type="class")
+confusion_matrix_rf_8 = table(pred=test_predict_rf_8, true=test$income)
+
+test_predict_rf_9 = predict(rf_9,test,type="class")
+confusion_matrix_rf_9 = table(pred=test_predict_rf_9, true=test$income)
+
+test_predict_rf_10 = predict(rf_10,test,type="class")
+confusion_matrix_rf_10 = table(pred=test_predict_rf_10, true=test$income)
+
+rf_feature <- c(1,2,3,4,5,6,7,8,9,10)
+tree_accuracy_rf <- c((confusion_matrix_rf_1[1,1] + confusion_matrix_rf_1[2,2])/sum(confusion_matrix_rf_1),
+                      (confusion_matrix_rf_2[1,1] + confusion_matrix_rf_2[2,2])/sum(confusion_matrix_rf_2),
+                      (confusion_matrix_rf_3[1,1] + confusion_matrix_rf_3[2,2])/sum(confusion_matrix_rf_3),
+                      (confusion_matrix_rf_4[1,1] + confusion_matrix_rf_4[2,2])/sum(confusion_matrix_rf_4),
+                      (confusion_matrix_rf_5[1,1] + confusion_matrix_rf_5[2,2])/sum(confusion_matrix_rf_5),
+                      (confusion_matrix_rf_6[1,1] + confusion_matrix_rf_6[2,2])/sum(confusion_matrix_rf_6),
+                      (confusion_matrix_rf_7[1,1] + confusion_matrix_rf_7[2,2])/sum(confusion_matrix_rf_7),
+                      (confusion_matrix_rf_8[1,1] + confusion_matrix_rf_8[2,2])/sum(confusion_matrix_rf_8),
+                      (confusion_matrix_rf_9[1,1] + confusion_matrix_rf_9[2,2])/sum(confusion_matrix_rf_9),
+                      (confusion_matrix_rf_10[1,1] + confusion_matrix_rf_10[2,2])/sum(confusion_matrix_rf_10))
+tree_precision_rf <- c(precision(confusion_matrix_rf_1),
+                       precision(confusion_matrix_rf_2),
+                       precision(confusion_matrix_rf_3),
+                       precision(confusion_matrix_rf_4),
+                       precision(confusion_matrix_rf_5),
+                       precision(confusion_matrix_rf_6),
+                       precision(confusion_matrix_rf_7),
+                       precision(confusion_matrix_rf_8),
+                       precision(confusion_matrix_rf_9),
+                       precision(confusion_matrix_rf_10))
+tree_recall_rf <- c(recall(confusion_matrix_rf_1),
+                    recall(confusion_matrix_rf_2),
+                    recall(confusion_matrix_rf_3),
+                    recall(confusion_matrix_rf_4),
+                    recall(confusion_matrix_rf_5),
+                    recall(confusion_matrix_rf_6),
+                    recall(confusion_matrix_rf_7),
+                    recall(confusion_matrix_rf_8),
+                    recall(confusion_matrix_rf_9),
+                    recall(confusion_matrix_rf_10))
+
+tree_summary_rf <- cbind(rf_feature, round(tree_accuracy_rf*100, 1), round(tree_precision_rf*100, 1), round(tree_recall_rf*100, 1))
+colnames(tree_summary_rf) <- c("Number of feature","Accuracy", "Precision", "Recall")
+tree_summary_rf |>
+  kable()
+
+```
+
+
+**Decision tree model, without weight (without fnlwgt)**
+
+# (1) Base/original model
+```{r}
+training_1 = training[ ,-which(colnames(training) == 'fnlwgt')]
+test_1 = test[ ,-which(colnames(test) == 'fnlwgt')]
+tree_1 = tree(formula = income ~ ., training_1)
+tree_1
+summary(tree_1)
+
+test_predict_1 = predict(tree_1,test_1,type="class")
+confusion_matrix_1 = table(pred=test_predict_1, true=test_1$income)
+confusion_matrix_1
+
+tree_summary_1 <- cbind(round(100*(confusion_matrix_1[1,1] + confusion_matrix_1[2,2])/sum(confusion_matrix_1), 1), round(precision(confusion_matrix_1)*100, 1), round(recall(confusion_matrix_1)*100, 1))
+colnames(tree_summary_1) <- c("Accuracy", "Precision", "Recall")
+tree_summary_1 |>
+  kable()
+
+```
+
+# (2) Pruning
+```{r}
+
+cv_prune = cv.tree(tree_1, FUN = prune.misclass)
+cv_prune
+plot(cv_prune$size, cv_prune$dev, type="b")
+best_size = cv_prune$size[order(cv_prune$dev, decreasing = FALSE)[1]]
+
+```
+The best size is 5. This is the same with the original tree (without weight)
+
+# Plot
+```{r}
+
+png("decision_tree__no_weight.png", width = 15, height = 8, units = "in", res = 300)
+par(mar = c(5, 5, 5, 5))  # Set margins (bottom, left, top, right)
+plot(tree_1)
+text(tree_1,pretty=0)
+
+```
+
+# (3) Bagging
+```{r}
+
+bagging_1 = randomForest(income ~ ., training_1, mtry=(ncol(training_1)-1)) 
+bagging_1
+
+test_predict_b_1 = predict(bagging_1,test_1,type="class")
+confusion_matrix_b_1 = table(pred=test_predict_b_1, true=test_1$income)
+confusion_matrix_b_1
+
+tree_summary_b_1 <- cbind(round(100*(confusion_matrix_b_1[1,1] + confusion_matrix_b_1[2,2])/sum(confusion_matrix_b_1), 1), round(precision(confusion_matrix_b_1)*100, 1), round(recall(confusion_matrix_b_1)*100, 1))
+colnames(tree_summary_b_1) <- c("Accuracy", "Precision", "Recall")
+tree_summary_b_1 |>
+  kable()
+
+```
+
+# (4) Random forest
+```{r}
+
+rf_1_1 = randomForest(income ~ ., training_1, mtry=1) 
+rf_1_2 = randomForest(income ~ ., training_1, mtry=2) 
+rf_1_3 = randomForest(income ~ ., training_1, mtry=3) 
+rf_1_4 = randomForest(income ~ ., training_1, mtry=4) 
+rf_1_5 = randomForest(income ~ ., training_1, mtry=5) 
+rf_1_6 = randomForest(income ~ ., training_1, mtry=6) 
+rf_1_7 = randomForest(income ~ ., training_1, mtry=7) 
+rf_1_8 = randomForest(income ~ ., training_1, mtry=8) 
+rf_1_9 = randomForest(income ~ ., training_1, mtry=9) 
+rf_1_10 = randomForest(income ~ ., training_1, mtry=10) 
+
+test_predict_rf_1_1 = predict(rf_1_1,test_1,type="class")
+confusion_matrix_rf_1_1 = table(pred=test_predict_rf_1_1, true=test_1$income)
+
+test_predict_rf_1_2 = predict(rf_1_2,test_1,type="class")
+confusion_matrix_rf_1_2 = table(pred=test_predict_rf_1_2, true=test_1$income)
+
+test_predict_rf_1_3 = predict(rf_1_3,test_1,type="class")
+confusion_matrix_rf_1_3 = table(pred=test_predict_rf_1_3, true=test_1$income)
+
+test_predict_rf_1_4 = predict(rf_1_4,test_1,type="class")
+confusion_matrix_rf_1_4 = table(pred=test_predict_rf_1_4, true=test_1$income)
+
+test_predict_rf_1_5 = predict(rf_1_5,test_1,type="class")
+confusion_matrix_rf_1_5 = table(pred=test_predict_rf_1_5, true=test_1$income)
+
+test_predict_rf_1_6 = predict(rf_1_6,test_1,type="class")
+confusion_matrix_rf_1_6 = table(pred=test_predict_rf_1_6, true=test_1$income)
+
+test_predict_rf_1_7 = predict(rf_1_7,test_1,type="class")
+confusion_matrix_rf_1_7 = table(pred=test_predict_rf_1_7, true=test_1$income)
+
+test_predict_rf_1_8 = predict(rf_1_8,test_1,type="class")
+confusion_matrix_rf_1_8 = table(pred=test_predict_rf_1_8, true=test_1$income)
+
+test_predict_rf_1_9 = predict(rf_1_9,test_1,type="class")
+confusion_matrix_rf_1_9 = table(pred=test_predict_rf_1_9, true=test_1$income)
+
+test_predict_rf_1_10 = predict(rf_1_10,test_1,type="class")
+confusion_matrix_rf_1_10 = table(pred=test_predict_rf_1_10, true=test_1$income)
+
+rf_feature_1 <- c(1,2,3,4,5,6,7,8,9,10)
+tree_accuracy_rf_1 <- c((confusion_matrix_rf_1_1[1,1] + confusion_matrix_rf_1_1[2,2])/sum(confusion_matrix_rf_1_1),
+                      (confusion_matrix_rf_1_2[1,1] + confusion_matrix_rf_1_2[2,2])/sum(confusion_matrix_rf_1_2),
+                      (confusion_matrix_rf_1_3[1,1] + confusion_matrix_rf_1_3[2,2])/sum(confusion_matrix_rf_1_3),
+                      (confusion_matrix_rf_1_4[1,1] + confusion_matrix_rf_1_4[2,2])/sum(confusion_matrix_rf_1_4),
+                      (confusion_matrix_rf_1_5[1,1] + confusion_matrix_rf_1_5[2,2])/sum(confusion_matrix_rf_1_5),
+                      (confusion_matrix_rf_1_6[1,1] + confusion_matrix_rf_1_6[2,2])/sum(confusion_matrix_rf_1_6),
+                      (confusion_matrix_rf_1_7[1,1] + confusion_matrix_rf_1_7[2,2])/sum(confusion_matrix_rf_1_7),
+                      (confusion_matrix_rf_1_8[1,1] + confusion_matrix_rf_1_8[2,2])/sum(confusion_matrix_rf_1_8),
+                      (confusion_matrix_rf_1_9[1,1] + confusion_matrix_rf_1_9[2,2])/sum(confusion_matrix_rf_1_9),
+                      (confusion_matrix_rf_1_10[1,1] + confusion_matrix_rf_1_10[2,2])/sum(confusion_matrix_rf_1_10))
+tree_precision_rf_1 <- c(precision(confusion_matrix_rf_1_1),
+                       precision(confusion_matrix_rf_1_2),
+                       precision(confusion_matrix_rf_1_3),
+                       precision(confusion_matrix_rf_1_4),
+                       precision(confusion_matrix_rf_1_5),
+                       precision(confusion_matrix_rf_1_6),
+                       precision(confusion_matrix_rf_1_7),
+                       precision(confusion_matrix_rf_1_8),
+                       precision(confusion_matrix_rf_1_9),
+                       precision(confusion_matrix_rf_1_10))
+tree_recall_rf_1 <- c(recall(confusion_matrix_rf_1_1),
+                    recall(confusion_matrix_rf_1_2),
+                    recall(confusion_matrix_rf_1_3),
+                    recall(confusion_matrix_rf_1_4),
+                    recall(confusion_matrix_rf_1_5),
+                    recall(confusion_matrix_rf_1_6),
+                    recall(confusion_matrix_rf_1_7),
+                    recall(confusion_matrix_rf_1_8),
+                    recall(confusion_matrix_rf_1_9),
+                    recall(confusion_matrix_rf_1_10))
+
+tree_summary_rf_1 <- cbind(rf_feature_1, round(tree_accuracy_rf_1*100, 1), round(tree_precision_rf_1*100, 1), round(tree_recall_rf_1*100, 1))
+colnames(tree_summary_rf_1) <- c("Number of feature","Accuracy", "Precision", "Recall")
+tree_summary_rf_1 |>
+  kable()
+
+```
+
+
+**Lasso**
+
+```{r}
+lasso_target <- as.numeric(training$income) - 1
+```
+
+```{r}
+# Fit Lasso regression model
+lasso_model <- glmnet(x = as.matrix(training[, -ncol(training)]),  # Predictor variables
+                      y = lasso_target,              # Response variable
+                      alpha = 1) 
+```
+
+```{r}
+plot(lasso_model, xvar = "lambda", label = TRUE)
+```
+
+# Cross Validation
+
+```{r}
+cvfit <- cv.glmnet(x = as.matrix(training[, -ncol(training)]),  # Predictor variables
+                      y = lasso_target)
+```
+```{r}
+# View a plot of training error vs log lambda
+plot(cvfit)
+```
+
+
+```{r}
+# Optimal lambda
+cvfit$lambda.1se
+```
+```{r}
+# Predictions
+predicted <- predict(cvfit, newx = as.matrix(test[, -ncol(test)]), s = cvfit$lambda.min )
+```
+```{r}
+# Convert target to 0/1 numeric variable
+test_as_numeric <- as.numeric(test$income) - 1
+```
+
+```{r}
+# Convert predictions to 0/1 using threshold = 0.5
+predicted_class <- ifelse(predicted > 0.5, 1, 0)
+
+# Compute accuracy
+accuracy <- mean(predicted_class == test_as_numeric)
+print(accuracy)
+```
