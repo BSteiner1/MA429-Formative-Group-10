@@ -530,7 +530,7 @@ plot(cvfit)
 
 ```{r}
 # Optimal lambda
-cvfit$lambda.min 
+cvfit$lambda.1se
 ```
 ```{r}
 # Predictions
@@ -549,5 +549,3 @@ predicted_class <- ifelse(predicted > 0.5, 1, 0)
 accuracy <- mean(predicted_class == test_as_numeric)
 print(accuracy)
 ```
-
-
